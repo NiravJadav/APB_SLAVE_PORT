@@ -1,317 +1,29 @@
-// Design : apb_slave port for LPDDR3-4 MC
-// Datawidth supported by design 8/16/32 [APB_DATAWIDTH]
- 
-module apb_slave_port
-#(
-   parameter APB_ADDRWIDTH =16 , 
-   parameter APB_DATAWIDTH = 32,
-   parameter NB_RANK=2 
-)
-( 
-  input 			 pclk_i		,
-  input 			 prst_ni	,
-  input  [APB_ADDRWIDTH-1:0]	 paddr_i	,
-  input 			 psel_i		,
-  input 			 penable_i	,
-  input  			 pwrite_i	,
-  input  [APB_DATAWIDTH-1:0]	 pwdata_i	,
-  input  [3:0]			 pstrb_i	,
-  output 			 pready_o	,
-  output reg [APB_DATAWIDTH-1:0] prdata_o	,
-  output 			 pslverr_o     	, 
-
-  output [NB_RANK-1:0]		rank_mrw_o		,   // slave backend interface
-  output [NB_RANK-1:0]		rank_mrr_o		,
-  input  [NB_RANK-1:0]		mrw_done_status_i	,
-  input  [NB_RANK-1:0]		mrr_done_status_i	,
-  input  [NB_RANK-1:0]		ppr_status_i		,
-  output [NB_RANK-1:0]		ppr_en_o		,
-  input  [NB_RANK-1:0]  	ppr_done_status_i	,				
-
-  output 			mc_intr_o		,
-  input 			init_resp_error_i 	,  // mc_err_intr_pins
-  input 			ca_resp_error_i		,
-  input 			read_gate_resp_error_i	,
-  input 			read_level_resp_error_i	,
-  input 			write_level_resp_error_i,
-  input 			write_dq_resp_error_i  	,
-  input 			mc_error_i		,
-  input 			test_mode_intr_i	,  // mc_intr_pins
-  input 			freq_change_error_i	,
-  input 			freq_change_done_i	,
-  input 			freq_change_ready_i	,
-  input 			watch_dog_timeout_i	,
-  input 			refresh_x_trm_i		
-);
-
-wire 				r_en	;	// read enable 	, prdata_i <-- register_bank
-wire 			  	w_en	;	// write enable	, register_bank <-- pwdata_i 
-wire [31:0] 			wdata_c	;	
-wire [APB_DATAWIDTH-1:0]	prdata_c;
-
-localparam ADDR_LSB = (APB_DATAWIDTH/8)>>1;  // paramter to generalize paddr_i LSB in generate loop 
-
-// Rank Specific Registers 
-wire add_00h	;	//	0x00h -->	Mode Register Address Register 
-wire add_01h	;	//	0x01h -->	Mode Register Data Register
-wire add_02h	;	//	0x02h --> 	Rank Access Control/Status Register
-wire add_03h	;	//	0x03h --> 	Rank Index register	
-wire add_04h	;	// 	0x04h --> 	PPR Control/Status Register
-wire add_05h 	;	//	0x05h --> 	PPR Bank Address Register
-wire add_06h  	;	//	0x06h --> 	PPR Row Address Register
-wire add_07h	;	
-
-wire add_60h	;	//	0x60h --> 	Rank Interrupt Status Register
-wire add_61h	;	//	0x61h -->   	MC Error Interrupt Satatus Regsiter	
-wire add_62h	;	//	0x62h -->	MC Inerrupt Status Register
-wire add_64h	;	//	0x64h -->	Rank Interrupt Enable Register
-wire add_65h	;	//	0x65h -->	MC Error Interrupt Enable Register
-wire add_66h	;	//	0x66h -->	MC Interrupt Enable Register
-
-wire [31:0] reg_data	;
-// Logic for APB control signal 
-
-	assign pready_o  = psel_i ? 1 :	0 ; 	// if slave select than salve ready 
-	assign pslverr_o = 0		  ;	// not implemented 
-	
-	assign r_en = (!pwrite_i & penable_i	)	;	// read_enable signal
-	assign w_en = ( pwrite_i & penable_i	)	;	// write_enable signal
-
-// Logic for address select as datawidth is variable [8/16/32]
-	generate 
-		begin
-		if(APB_DATAWIDTH == 8)
-			begin
-			assign add_00h 	= (psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == ('h00>>ADDR_LSB)) ) ? 1 :  0	;
-			assign add_01h 	= (psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == ('h01>>ADDR_LSB)) ) ? 1 :  0	;
-			assign add_02h	= (psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == ('h02>>ADDR_LSB)) ) ? 1 :  0 	;
-			assign add_03h 	= (psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == ('h03>>ADDR_LSB)) ) ? 1 :  0	;
-			assign add_04h 	= (psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == ('h04>>ADDR_LSB)) ) ? 1 :  0	;
-			assign add_05h	= (psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == ('h05>>ADDR_LSB)) ) ? 1 :  0	;
-			assign add_06h 	= (psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == ('h06>>ADDR_LSB)) ) ? 1 :  0	;
-			assign add_07h 	= (psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == ('h07>>ADDR_LSB)) ) ? 1 :  0	;
-			
-			assign add_60h 	= (psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == ('h60>>ADDR_LSB)) ) ? 1 :  0	;
-			end
-		if(APB_DATAWIDTH == 16)
-			begin
-			assign add_00h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h00>>ADDR_LSB) & pstrb_i[0]) ) ? 1 :  0 ;
-			assign add_01h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h01>>ADDR_LSB) & pstrb_i[1]) ) ? 1 :  0 ;
-			
-			assign add_02h	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h02>>ADDR_LSB) & pstrb_i[0]) ) ? 1 :  0 ;
-			assign add_03h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h03>>ADDR_LSB) & pstrb_i[1]) ) ? 1 :  0 ;
-
-			assign add_04h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h04>>ADDR_LSB) & pstrb_i[0]) ) ? 1 :  0 ;
-			assign add_05h	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h05>>ADDR_LSB) & pstrb_i[1]) ) ? 1 :  0 ;
-
-			assign add_06h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h06>>ADDR_LSB) & pstrb_i[0]) ) ? 1 :  0 ;
-			assign add_07h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h07>>ADDR_LSB) & pstrb_i[1]) ) ? 1 :  0 ;
-			
-			assign add_60h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h07>>ADDR_LSB) & pstrb_i[0]) ) ? 1 :  0 ;
-			
-			end
-		if(APB_DATAWIDTH == 32)
-			begin
-			assign add_00h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h00>>ADDR_LSB) & pstrb_i[0]) ) ? 1 :  0 ;
-			assign add_01h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h01>>ADDR_LSB) & pstrb_i[1]) ) ? 1 :  0 ;
-			assign add_02h	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h02>>ADDR_LSB) & pstrb_i[2]) ) ? 1 :  0 ;
-			assign add_03h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h03>>ADDR_LSB) & pstrb_i[3]) ) ? 1 :  0 ;
-
-			assign add_04h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h04>>ADDR_LSB) & pstrb_i[0]) ) ? 1 :  0 ;
-			assign add_05h	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h05>>ADDR_LSB) & pstrb_i[1]) ) ? 1 :  0 ;
-			assign add_06h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h06>>ADDR_LSB) & pstrb_i[2]) ) ? 1 :  0 ;
-			assign add_07h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h07>>ADDR_LSB) & pstrb_i[3]) ) ? 1 :  0 ;
-		
-			assign add_60h 	= ((psel_i & (paddr_i[APB_ADDRWIDTH-1:ADDR_LSB] == 'h07>>ADDR_LSB) & pstrb_i[0]) ) ? 1 :  0 ;
-			
-			end
-		end
-	endgenerate	
-// - * - * - * - - * - * - * - - * - * - * - - * - * - * - - * - * - * - - * - * - * - - * - * - * - 	
-// Write Transfer :- 
-//			pwdata_i is assigned to wdata_c [as per datawidth and given paddr_i]
-//			register which address is selected, save data from  wdata_c [as per w_en]
-//
-// Read Transfer :-	reg_data sample data from register_bank whose address being selected !
-//			prdata_c take data from reg_data [as per datawidth and paddr_i]
-//			prdata_o is sample data from pwdata_c [as per r_en]		
-
-	generate
-	begin
-		if(APB_DATAWIDTH == 8)
-		begin
-		assign wdata_c [7 : 0] =(paddr_i[1:0]==0) ? pwdata_i  : 0;
-		assign wdata_c [15: 8] =(paddr_i[1:0]==1) ? pwdata_i  : 0;
-		assign wdata_c [23:16] =(paddr_i[1:0]==2) ? pwdata_i  : 0;
-		assign wdata_c [31:24] =(paddr_i[1:0]==3) ? pwdata_i  : 0;
-
-		assign prdata_c		= (paddr_i[1:0]==0) ? reg_data[ 7: 0] :
-					  	(paddr_i[1:0]==1) ? reg_data[15: 8] :
-					  		(paddr_i[1:0]==2) ? reg_data[23:16] :
-					  			(paddr_i[1:0]==3) ? reg_data[31:24] : 0 ;	 
-		
-		end
-				
-		if(APB_DATAWIDTH == 16)
-		begin
-		assign wdata_c [15: 0] = (paddr_i[1] ==0) ? pwdata_i  : 0;
-		assign wdata_c [31:16] = (paddr_i[1] ==1) ? pwdata_i  : 0;
-
-		assign prdata_c		= (paddr_i[1] ==0) ? reg_data[15:0] :
-						(paddr_i[1] == 1)? reg_data[31:16] : 0;
-		end
-
-		if(APB_DATAWIDTH == 32)
-		begin
-		assign wdata_c = pwdata_i;
-		assign prdata_c= reg_data;
-		end
-	end
-	endgenerate
-
-// - * - * - * - - * - * - * - - * - * - * - - * - * - * - - * - * - * - - * - * - * - - * - * - * - 	
-
-
-
-
-
-// 1. Rank Specific Registers 
-
-reg [NB_RANK-1:0][7:0] mr_addr 		; // addr = 00h | RW
-reg [NB_RANK-1:0][7:0] mr_data 		; // addr = 01h | RW
-
-reg [NB_RANK-1:0] rank_mrw 		; // addr = 02h | SET
-reg [NB_RANK-1:0] rank_mrr 		; //		| SET
-reg [NB_RANK-1:0] rank_busy 		; // 		| RO
-reg [NB_RANK-1:0] mrw_done_status	; // 		| RO
-reg [NB_RANK-1:0] mrr_done_status	; // 		| RO
-reg [NB_RANK-1:0] ppr_done_status	; // 		| RO
-
-reg [2:0]	  rank_index		; // addr = 03h | RW
-reg		  all_rank_mr		; // 		| RW
-
-reg [NB_RANK-1:0] ppr_enable		; // addr = 04h | SET
-reg [NB_RANK-1:0] ppr_status		; // 		| RO
-
-reg [7:0]	  rank_intr		; // addr = 60h | RO/COR
-
-reg 		  init_resp_error	; // addr = 61h | RO/COR
-reg 		  ca_resp_error		;
-reg 		  read_gate_resp_error	;
-reg 		  read_level_resp_error	;
-reg 		  write_level_resp_error;
-reg 		  write_dq_resp_error	;
-reg 		  mc_error		;
-
-reg 		 test_mode_intr		; // addr = 62h  | RO/CPR
-reg 		 freq_change_error	; //		 | RO/COR
-reg 		 freq_change_done		; //		 | RO/COR
-reg 		 freq_change_ready 	; //		 | RO/COR
-reg 		 watch_dog_timeout	; //		 | RO/COR
-reg 		 refresh_x_trm		; //		 | RO/COR	   
-
-reg [7:0] 	  rank_intr_en		; // addr = 64h | RW
-
-reg 		  init_resp_error_en		; // addr = 65h | RW 
-reg 		  ca_resp_error_en		; //		| RW
-reg 		  read_gate_resp_error_en	; //		| RW
-reg 		  read_level_resp_error_en	; //		| RW
-reg 		  write_level_resp_error_en	; //		| RW
-reg 		  write_dq_resp_error_en	; //		| RW
-reg 		  mc_error_en			; //		| RW
-
-reg		intr_0_en	; // addr = 66h  | RW
-reg		intr_1_en	; //		 | RW
-reg		intr_2_en	; //		 | RW
-reg		intr_3_en	; //		 | RW
-reg		intr_4_en	; //		 | RW
-reg		intr_5_en	; //		 | RW
-
-///////////////////////////////////////////////////////////////////////////////////////////////
-
-wire [NB_RANK-1:0] rank_busy_c	;
-wire [NB_RANK-1:0] mrw_done_c	;
-wire [NB_RANK-1:0] mrr_done_c	;
-wire [NB_RANK-1:0] rank_intr_c	;
-wire [NB_RANK-1:0] ppr_done_c	;
-
-genvar i;
-
-generate 
-    for(i =0;i<NB_RANK ;i++)
-	begin  
-	    assign rank_mrw_o[i]    = rank_mrw[i]; // output pin
-	    assign rank_mrr_o[i]    = rank_mrr[i]; // output pin
-	    
-	    assign rank_busy_c[i]    = (rank_mrw[i] | rank_mrr[i])  ? 1'b1 :
-			 		     (mrr_done_status_i[i] | mrw_done_status_i[i])? 1'b0: rank_busy[i];
-	    
-	    assign mrw_done_c[i]    = (mrw_done_status_i[i]) ? 1'b1 :
-					     (add_02h & r_en & (rank_index == i))? 1'b0 : mrw_done_status[i] ;
-	    
-	    assign mrr_done_c[i]    = (mrr_done_status_i[i]) ? 1'b1 :
-			 		     (add_02h & r_en & (rank_index == i)) ? 1'b0 :mrr_done_status[i];
-	
-	    assign ppr_done_c[i]    = (ppr_done_status_i[i]) ? 1'b1 :
-					     (add_02h & r_en & (rank_index == i)) ? 1'b0 :ppr_done_status[i]; 
-
-	    assign rank_intr_c[i]   = (mrr_done_status_i[i] | mrw_done_status_i[i]) ? 1'b1 :
-					    (add_60h & r_en) ? 1'b0 : rank_intr[i];  
-	   
-	    assign ppr_en_o [i]	    = ppr_enable[i]; // output pin 
-
-	    assign ppr_status_c[i]  = (ppr_status_i[i])	     ? 1'b1 :
-					    (add_04h & r_en) ? 1'b0 : ppr_status;
-				      
-					     
-	    
-	end
-endgenerate 
-
-assign init_resp_error_c 	= (init_resp_error_i)	    ? 1'b1 :
-					(add_61h & r_en)    ? 1'b0 : init_resp_error	    ;
-assign ca_resp_error_c 		= (ca_resp_error_i)	    ? 1'b1 :
-					(add_61h & r_en)    ? 1'b0 : ca_resp_error	    ;
-assign read_gate_resp_error_c	= (read_gate_resp_error_i)  ? 1'b1 :
-					(add_61h & r_en)    ? 1'b0 : read_gate_resp_error   ;
-assign read_level_resp_error_c 	= (read_level_resp_error_i) ? 1'b1 :
-					(add_61h & r_en)    ? 1'b0 : read_level_resp_error  ;
-assign write_level_resp_error_c = (write_level_resp_error_i)? 1'b1 :
-					(add_61h & r_en)    ? 1'b0 : write_level_resp_error ;
-assign write_dq_resp_error_c 	= (write_dq_resp_error_i)   ? 1'b1 :
-					(add_61h & r_en)    ? 1'b0 : write_dq_resp_error    ;
-assign mc_error_c 		= (mc_error_i)		    ? 1'b1 :
-					(add_61h & r_en)    ? 1'b0 : mc_error		    ;
-
-assign test_mode_intr_c 	= (test_mode_intr_i)	    ? 1'b1 :
-					(add_62h & r_en)    ? 1'b0 : test_mode_intr	    ;
-assign freq_change_error_c 	= (freq_change_error_i)	    ? 1'b1 :
-					(add_62h & r_en)    ? 1'b0 : freq_change_error	    ;
-assign freq_change_done_c 	= (freq_change_done_i)	    ? 1'b1 : 
-					(add_62h & r_en)    ? 1'b0 : freq_change_done	    ;
-assign freq_change_ready_c	= (freq_change_ready_i)	    ? 1'b1 :
-					(add_62h & r_en)    ? 1'b0 : freq_change_ready	    ;
-assign watch_dog_timeout_c 	= (watch_dog_timeout_i)	    ? 1'b1:
-					(add_62h & r_en)    ? 1'b0 : watch_dog_timeout	    ;
-assign refresh_x_trm_c 		= (refresh_x_trm_i)	    ? 1'b1 : 
-					(add_62h & r_en)    ? 1'b0 : refresh_x_trm	    ; 
 
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //--> Interrupt FLAG Logic
-wire rank_intr_or;
+wire [NB_RANK-1:0]rank_intr_or;
 wire mc_err_intr_or;
 wire mc_intr_or;
 
-    assign mc_intr_o = ( rank_intr_or | mc_err_intr_or | mc_intr_or) ;  // Interrupt pin logic 
+    assign mc_intr_o = ( |rank_intr_or ) ;  // Interrupt pin logic 
 
-    assign rank_intr_or = ((rank_intr_en[0]  &	( mrw_done_status_i[0] | mrr_done_status_i[0] | ppr_done_status_i[0]) ) | 
-			   (rank_intr_en[1]  &  ( mrw_done_status_i[1] | mrr_done_status_i[1] | ppr_done_status_i[1]) ) | 
+genvar j;
+
+generate
+for(j=0; j<NB_RANK; j++)
+ begin
+    assign rank_intr_or[j] = (rank_intr_en[j]  & ( mrw_done_status_i[j] | mrr_done_status_i[j] | ppr_done_status_i[j]) ) ;
+ end
+endgenerate 
+	/*		   (rank_intr_en[1]  &  ( mrw_done_status_i[1] | mrr_done_status_i[1] | ppr_done_status_i[1]) ) | 
 			   (rank_intr_en[2]  &  ( mrw_done_status_i[2] | mrr_done_status_i[2] | ppr_done_status_i[2]) ) | 
 			   (rank_intr_en[3]  &  ( mrw_done_status_i[3] | mrr_done_status_i[3] | ppr_done_status_i[3]) ) | 
 			   (rank_intr_en[4]  &  ( mrw_done_status_i[4] | mrr_done_status_i[4] | ppr_done_status_i[4]) ) | 
 			   (rank_intr_en[5]  &  ( mrw_done_status_i[5] | mrr_done_status_i[5] | ppr_done_status_i[5]) ) | 
 			   (rank_intr_en[6]  &  ( mrw_done_status_i[6] | mrr_done_status_i[6] | ppr_done_status_i[6]) ) | 
-			   (rank_intr_en[7]  &  ( mrw_done_status_i[7] | mrr_done_status_i[7] | ppr_done_status_i[7]) )    ) ;
+			   (rank_intr_en[7]  &  ( mrw_done_status_i[7] | mrr_done_status_i[7] | ppr_done_status_i[7]) )    ) ;*/
+
+  
 
     assign mc_err_intr_or = (	( init_resp_error_en	    & init_resp_error_i 	) |
 			    	( ca_resp_error_en	    & ca_resp_error_i 		) |
@@ -392,7 +104,7 @@ wire mc_intr_or;
  
 			if(add_03h & w_en) {all_rank_mr , rank_index} <= {wdata_c[31],wdata_c[26:24]};
 			
-			if(add_04h & w_en & wdata_c[0])	    ppr_enable <= 1; 	      else ppr_enable <=0; 	
+			if(add_04h & w_en & wdata_c[0])	    ppr_enable[rank_index] <= 1; 	      else ppr_enable[rank_index] <=0; 	
 			ppr_status	<= ppr_status_c;	
 			
 			rank_intr	<= rank_intr_c				; // addr = 60h 	
@@ -422,20 +134,20 @@ wire mc_intr_or;
 	
 
 assign reg_data[7 : 0] =(add_00h ) ? mr_addr[rank_index] :
-			(add_04h ) ? {6'b0,ppr_status,1'b0} :
+			(add_04h ) ? {6'b0,ppr_status[rank_index],1'b0} :
 			(add_60h ) ? {rank_intr}:
-			(add_64h ) ? {rank_intr_en} : 0;
+			(add_64h ) ? {rank_intr_en} : 8'b0;
 
 
 assign reg_data[15: 8] =(add_01h ) ? mr_data [rank_index] :
 			(add_61h ) ? {1'b0, mc_error, write_dq_resp_error, write_level_resp_error, read_level_resp_error, read_gate_resp_error, ca_resp_error, init_resp_error} :
-			(add_65h ) ? {1'b0, mc_error_en,write_dq_resp_error_en,  write_level_resp_error_en, read_gate_resp_error_en, read_level_resp_error_en, ca_resp_error_en,init_resp_error_en} 	 : 0;
+			(add_65h ) ? {1'b0, mc_error_en,write_dq_resp_error_en,  write_level_resp_error_en, read_gate_resp_error_en, read_level_resp_error_en, ca_resp_error_en,init_resp_error_en} 	 : 8'b0;
 
 assign reg_data[23:16] =(add_02h ) ? {ppr_done_status[rank_index], mrr_done_status[rank_index], mrw_done_status[rank_index], 1'b0, 1'b0 , rank_busy_c[rank_index], 2'b0} :
 			(add_62h ) ? {2'b0,refresh_x_trm, watch_dog_timeout, freq_change_ready, freq_change_done, freq_change_error, test_mode_intr} :
-			(add_66h ) ? {2'b0, intr_5_en , intr_4_en, intr_3_en, intr_2_en, intr_1_en, intr_0_en} : 0;
+			(add_66h ) ? {2'b0, intr_5_en , intr_4_en, intr_3_en, intr_2_en, intr_1_en, intr_0_en} : 8'b0;
 
-assign reg_data[31:24] =(add_03h ) ? {all_rank_mr, 4'b0, rank_index} : 0;	
+assign reg_data[31:24] =(add_03h ) ? {all_rank_mr, 4'b0, rank_index} : 8'b0;	
 
 	always@(posedge pclk_i or negedge prst_ni)
 	begin
